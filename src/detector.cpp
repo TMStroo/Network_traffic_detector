@@ -182,15 +182,18 @@ void detectDnsTunneling(const std::vector<Conversation>& convs, std::vector<Anom
         if (c.dnsQueries.empty()) {
             continue;
         }
-        HostAgg& a = agg[c.key.srcIp];
         for (const DnsQueryEvent& q : c.dnsQueries) {
-            a.names.insert(q.name);
+            // Requests travel from client to resolver. Responses travel in
+            // the opposite direction, so attribute both to the client host.
+            std::string host = q.isResponse ? c.key.dstIp : c.key.srcIp;
+            HostAgg& a = agg[host];
             if (q.isResponse) {
                 if (q.rcode == 3) {
                     a.nxdomains++;
                 }
                 continue;
             }
+            a.names.insert(q.name);
             a.queries++;
             if (q.qtype == 10 || q.qtype == 255 || q.qtype == 99 || q.qtype == 16 ||
                 q.qtype == 64 || q.qtype == 65 || q.qtype == 33) {
@@ -215,7 +218,10 @@ void detectDnsTunneling(const std::vector<Conversation>& convs, std::vector<Anom
         if (a.queries > 0) {
             a.avgLabelLen /= a.queries;
         }
-        if (a.queries < 12 || uniqueNames < 10) {
+        // Require both repeated unique names and at least one unusually long
+        // DNS label. This avoids alerting on ordinary high-volume DNS alone.
+        if (a.queries < 12 || uniqueNames < 10 ||
+            (a.maxLabelLen < 20 && a.avgLabelLen < 12.0)) {
             continue;
         }
         AnomalyRecord r;
@@ -256,11 +262,16 @@ void detectDnsHighNxdomain(const std::vector<Conversation>& convs, std::vector<A
         if (c.dnsQueries.empty()) {
             continue;
         }
-        HostAgg& a = agg[c.key.srcIp];
         for (const DnsQueryEvent& q : c.dnsQueries) {
-            a.queries++;
-            if (q.isResponse && q.rcode == 3) {
-                a.nxdomains++;
+            // Count requests and responses separately, under the client IP.
+            std::string host = q.isResponse ? c.key.dstIp : c.key.srcIp;
+            HostAgg& a = agg[host];
+            if (q.isResponse) {
+                if (q.rcode == 3) {
+                    a.nxdomains++;
+                }
+            } else {
+                a.queries++;
             }
             if (a.minT == 0 || q.timestampUs < a.minT) {
                 a.minT = q.timestampUs;
