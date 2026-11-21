@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(NetworkTrafficAnalyzer
-    VERSION 1.0.0
+    VERSION 1.1.0
     DESCRIPTION "Reads PCAP captures and finds unusual network activity"
     LANGUAGES CXX)
 
@@ -9,11 +9,7 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-if(NOT CMAKE_BUILD_TYPE)
-    set(CMAKE_BUILD_TYPE Release)
-endif()
-
-add_compile_options(-Wall -Wextra)
+find_package(SQLite3 REQUIRED)
 
 add_executable(nta
     src/main.cpp
@@ -29,9 +25,13 @@ add_executable(nta
 )
 
 target_include_directories(nta PRIVATE src)
+target_link_libraries(nta PRIVATE SQLite::SQLite3)
 
-# libsqlite3 is installed as a shared library without the dev symlink here.
-target_link_libraries(nta PRIVATE /usr/lib/x86_64-linux-gnu/libsqlite3.so.0)
+if(MSVC)
+    target_compile_options(nta PRIVATE /W4)
+else()
+    target_compile_options(nta PRIVATE -Wall -Wextra)
+endif()
 
 install(TARGETS nta RUNTIME DESTINATION bin)
 
@@ -43,3 +43,10 @@ add_executable(nta_packet_tests
 )
 target_include_directories(nta_packet_tests PRIVATE src)
 add_test(NAME packet_parser_tests COMMAND nta_packet_tests)
+
+add_executable(nta_pcap_tests
+    tests/test_pcap.cpp
+    src/pcap.cpp
+)
+target_include_directories(nta_pcap_tests PRIVATE src)
+add_test(NAME pcap_reader_tests COMMAND nta_pcap_tests)
