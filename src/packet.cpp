@@ -285,7 +285,7 @@ void parseDnsMessage(const uint8_t* buf, size_t len, PacketMetadata& m) {
         if (!readDnsName(buf, len, &p, name)) {
             return;
         }
-        if (p + 8 > len) {
+        if (p + 10 > len) {
             return;
         }
         p += 2;  // type
@@ -303,7 +303,7 @@ void parseDnsMessage(const uint8_t* buf, size_t len, PacketMetadata& m) {
         if (!readDnsName(buf, len, &p, name)) {
             return;
         }
-        if (p + 8 > len) {
+        if (p + 10 > len) {
             return;
         }
         int rtype = readU16(buf + p, true);
@@ -373,11 +373,11 @@ void parseUdp(const uint8_t* data, size_t len, PacketMetadata& m) {
     if (len < 8) {
         return;
     }
-    m.hasUdp = true;
     uint16_t udpLength = readU16(data + 4, true);
     if (udpLength < 8 || udpLength > len) {
         return;
     }
+    m.hasUdp = true;
     m.udpSrcPort = readU16(data, true);
     m.udpDstPort = readU16(data + 2, true);
     size_t paylen = udpLength - 8;
