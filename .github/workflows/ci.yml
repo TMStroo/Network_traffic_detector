@@ -1,0 +1,53 @@
+name: Build and test
+
+on:
+  push:
+    branches:
+      - improve-parser-and-scapy-validation
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake g++ libsqlite3-dev python3 python3-pip
+
+      - name: Configure
+        run: |
+          rm -rf build
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+
+      - name: Build
+        run: cmake --build build --parallel 2
+
+      - name: Run packet parser tests
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Generate sample capture
+        run: python3 tools/gen_test_pcap.py -o tests/ci_sample.pcap
+
+      - name: Run analyzer
+        run: ./build/nta analyze tests/ci_sample.pcap --db tests/ci.db --reset
+
+      - name: Check analyzer commands
+        run: |
+          ./build/nta hosts --db tests/ci.db
+          ./build/nta conversations --db tests/ci.db
+          ./build/nta anomalies --db tests/ci.db
+          ./build/nta report --db tests/ci.db
+
+      - name: Check Python scripts
+        run: python3 -m py_compile python/nta_stats.py tools/gen_test_pcap.py tools/validate_pcap.py
+
+      - name: Check Scapy validator
+        run: |
+          python3 -m pip install scapy
+          python3 tools/validate_pcap.py tests/ci_sample.pcap

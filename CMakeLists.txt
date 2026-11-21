@@ -34,3 +34,12 @@ target_include_directories(nta PRIVATE src)
 target_link_libraries(nta PRIVATE /usr/lib/x86_64-linux-gnu/libsqlite3.so.0)
 
 install(TARGETS nta RUNTIME DESTINATION bin)
+
+enable_testing()
+
+add_executable(nta_packet_tests
+    tests/test_packet.cpp
+    src/packet.cpp
+)
+target_include_directories(nta_packet_tests PRIVATE src)
+add_test(NAME packet_parser_tests COMMAND nta_packet_tests)
