@@ -343,21 +343,29 @@ void parseTcp(const uint8_t* data, size_t len, PacketMetadata& m) {
     m.fin = (m.tcpFlags & 0x01) != 0;
     m.rst = (m.tcpFlags & 0x04) != 0;
     uint8_t doff = (data[12] >> 4) & 0x0F;
+    // A TCP header is at least 20 bytes. Do not parse payload when the
+    // advertised header length is invalid or extends beyond this IP packet.
     if (doff < 5) {
-        doff = 5;
+        m.hasTcp = false;
+        return;
     }
     size_t hdr = (size_t)doff * 4;
     if (hdr > len) {
-        hdr = len;
+        m.hasTcp = false;
+        return;
     }
     size_t paylen = len - hdr;
     m.tcpDataLength = (int)paylen;
     if (paylen > 0) {
         m.tcpPayload.assign((const char*)data + hdr, paylen);
     }
-    if (isDnsPort(m.tcpSrcPort, m.tcpDstPort) && paylen >= 2) {
-        // DNS over TCP: two leading bytes are the message length prefix.
-        parseDnsMessage((const uint8_t*)m.tcpPayload.data() + 2, paylen - 2, m);
+    if (isDnsPort(m.tcpSrcPort, m.tcpDstPort) && paylen >= 14) {
+        // DNS over TCP starts with a two-byte message length.
+        const uint8_t* dns = (const uint8_t*)m.tcpPayload.data();
+        size_t dnsLen = readU16(dns, true);
+        if (dnsLen >= 12 && dnsLen <= paylen - 2) {
+            parseDnsMessage(dns + 2, dnsLen, m);
+        }
     }
 }
 
@@ -366,9 +374,13 @@ void parseUdp(const uint8_t* data, size_t len, PacketMetadata& m) {
         return;
     }
     m.hasUdp = true;
+    uint16_t udpLength = readU16(data + 4, true);
+    if (udpLength < 8 || udpLength > len) {
+        return;
+    }
     m.udpSrcPort = readU16(data, true);
     m.udpDstPort = readU16(data + 2, true);
-    size_t paylen = len - 8;
+    size_t paylen = udpLength - 8;
     if (paylen > 0) {
         m.udpPayload.assign((const char*)data + 8, paylen);
     }
@@ -378,38 +390,58 @@ void parseUdp(const uint8_t* data, size_t len, PacketMetadata& m) {
 }
 
 void parseIpv4(const uint8_t* data, size_t len, PacketMetadata& m) {
-    if (len < 20) {
+    if (len < 20 || (data[0] >> 4) != 4) {
         return;
     }
+
+    size_t headerLength = (size_t)(data[0] & 0x0F) * 4;
+    if (headerLength < 20 || headerLength > len) {
+        return;
+    }
+
+    uint16_t totalLength = readU16(data + 2, true);
+    if (totalLength < headerLength) {
+        return;
+    }
+
+    size_t packetLength = totalLength < len ? totalLength : len;
     m.hasIp = true;
     m.isIpv6 = false;
     m.ipProtocol = data[9];
     m.srcIp = IpAddress::v4FromBytes(data + 12);
     m.dstIp = IpAddress::v4FromBytes(data + 16);
-    m.ipTotalLength = readU16(data + 2, true);
-    m.ipFlags = (uint8_t)((data[6] >> 5) & 0x07);
-    m.ipFragOffset = readU16(data + 6, true) & 0x1FFF;
-    if ((m.ipFlags & 0x01) != 0 || m.ipFragOffset != 0) {
-        m.isFragment = true;
+    m.ipTotalLength = totalLength;
+
+    uint16_t fragment = readU16(data + 6, true);
+    m.ipFlags = (uint8_t)((fragment >> 13) & 0x07);
+    m.ipFragOffset = fragment & 0x1FFF;
+    m.isFragment = (m.ipFlags & 0x01) != 0 || m.ipFragOffset != 0;
+
+    // The transport header appears only in the first fragment. Even there,
+    // parsing it as a complete datagram would produce misleading payload data.
+    if (m.isFragment) {
+        return;
     }
-    if (m.ipTotalLength == 0 || m.ipTotalLength > (int64_t)len) {
-        m.ipTotalLength = (int64_t)len;
-    }
-    uint8_t ihl = (uint8_t)((data[0] & 0x0F) * 4);
-    if (ihl < 20 || ihl > len) {
-        ihl = 20;
-    }
-    if (m.ipProtocol == 6 && len - ihl >= 20) {
-        parseTcp(data + ihl, len - ihl, m);
-    } else if (m.ipProtocol == 17 && len - ihl >= 8) {
-        parseUdp(data + ihl, len - ihl, m);
+
+    size_t payloadLength = packetLength - headerLength;
+    if (m.ipProtocol == 6 && payloadLength >= 20) {
+        parseTcp(data + headerLength, payloadLength, m);
+    } else if (m.ipProtocol == 17 && payloadLength >= 8) {
+        parseUdp(data + headerLength, payloadLength, m);
     }
 }
 
 void parseIpv6(const uint8_t* data, size_t len, PacketMetadata& m) {
-    if (len < 40) {
+    if (len < 40 || (data[0] >> 4) != 6) {
         return;
     }
+
+    uint16_t payloadLength = readU16(data + 4, true);
+    size_t packetLength = 40 + (size_t)payloadLength;
+    if (packetLength > len) {
+        packetLength = len;
+    }
+
     m.hasIp = true;
     m.isIpv6 = true;
     for (int i = 0; i < 16; i++) {
@@ -418,37 +450,55 @@ void parseIpv6(const uint8_t* data, size_t len, PacketMetadata& m) {
     }
     m.srcIp.isIpv6 = true;
     m.dstIp.isIpv6 = true;
-    uint16_t plen = readU16(data + 4, true);
-    m.ipTotalLength = 40 + plen;
-    uint8_t nh = data[6];
-    size_t off = 40;
-    int guard = 0;
-    while ((nh == 0 || nh == 43 || nh == 60 || nh == 44) && guard < 16) {
-        if (off + 8 > len) {
-            break;
+    m.ipTotalLength = 40 + payloadLength;
+
+    uint8_t nextHeader = data[6];
+    size_t offset = 40;
+    int extensions = 0;
+
+    while (nextHeader == 0 || nextHeader == 43 || nextHeader == 60 ||
+           nextHeader == 44) {
+        if (++extensions > 16 || offset + 2 > packetLength) {
+            return;
         }
-        uint8_t next = data[off];
-        if (nh == 44) {
-            m.ipFragOffset = readU16(data + off + 2, true) & 0x1FFF;
-            if (m.ipFragOffset != 0) {
-                m.isFragment = true;
+
+        uint8_t followingHeader = data[offset];
+        size_t extensionLength = 0;
+        if (nextHeader == 44) {
+            if (offset + 8 > packetLength) {
+                return;
             }
-            off += 8;
+            uint16_t fragment = readU16(data + offset + 2, true);
+            m.ipFragOffset = (fragment >> 3) & 0x1FFF;
+            m.isFragment = true;
+            extensionLength = 8;
         } else {
-            int extLen = data[off + 1] * 8;
-            off += 8 + extLen;
+            extensionLength = ((size_t)data[offset + 1] + 1) * 8;
+            if (offset + extensionLength > packetLength) {
+                return;
+            }
         }
-        nh = next;
-        guard++;
+
+        offset += extensionLength;
+        nextHeader = followingHeader;
+
+        // Fragmented IPv6 packets need reassembly before transport parsing.
+        if (m.isFragment) {
+            m.ipProtocol = nextHeader;
+            return;
+        }
     }
-    m.ipProtocol = nh;
-    if (off >= len) {
+
+    m.ipProtocol = nextHeader;
+    if (offset > packetLength) {
         return;
     }
-    if (nh == 6 && len - off >= 20) {
-        parseTcp(data + off, len - off, m);
-    } else if (nh == 17 && len - off >= 8) {
-        parseUdp(data + off, len - off, m);
+
+    size_t remaining = packetLength - offset;
+    if (nextHeader == 6 && remaining >= 20) {
+        parseTcp(data + offset, remaining, m);
+    } else if (nextHeader == 17 && remaining >= 8) {
+        parseUdp(data + offset, remaining, m);
     }
 }
 
