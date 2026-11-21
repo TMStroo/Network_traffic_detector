@@ -1,0 +1,7 @@
+{
+	"InstallScripts" : 
+	[
+		"/home/tamirs/Network_traffic_detector/build/cmake_install.cmake"
+	],
+	"Parallel" : false
+}
