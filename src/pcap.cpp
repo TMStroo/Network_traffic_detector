@@ -4,13 +4,6 @@
 
 namespace {
 
-uint16_t readU16(const uint8_t* p, bool bigEndian) {
-    if (bigEndian) {
-        return (uint16_t)(((uint16_t)p[0] << 8) | p[1]);
-    }
-    return (uint16_t)(p[0] | ((uint16_t)p[1] << 8));
-}
-
 uint32_t readU32(const uint8_t* p, bool bigEndian) {
     if (bigEndian) {
         return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |

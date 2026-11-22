@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <map>
+#include <set>
 #include <string>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -18,7 +19,7 @@
 
 namespace {
 
-const char *kVersion = "nta 1.0.0";
+const char *kVersion = "nta 1.1.0";
 
 bool fileExists(const std::string &path) {
   struct stat st;
@@ -98,7 +99,11 @@ int cmdAnalyze(Storage &storage, const Cli &cli, std::string &message) {
     return 1;
   }
   const std::vector<std::string> &pos = cli.positionals();
-  if (pos.size() < 2) {
+  size_t startIndex = 1;
+  if (!pos.empty() && pos[0] != "analyze" && fileExists(pos[0])) {
+    startIndex = 0;
+  }
+  if (pos.size() < startIndex + 1) {
     fprintf(stderr, "nta: analyze needs at least one pcap file\n");
     return 1;
   }
@@ -108,7 +113,7 @@ int cmdAnalyze(Storage &storage, const Cli &cli, std::string &message) {
   std::map<std::string, int64_t> subjectToCapture;
   bool anyFileFailed = false;
 
-  for (size_t i = 1; i < pos.size(); i++) {
+  for (size_t i = startIndex; i < pos.size(); i++) {
     const std::string &path = pos[i];
     PcapFileReader reader;
     std::string openErr = reader.open(path);
@@ -491,6 +496,12 @@ int main(int argc, char **argv) {
   }
   const std::vector<std::string> &pos = cli.positionals();
   std::string command = pos.empty() ? "" : pos[0];
+  static const std::set<std::string> kCommands = {
+      "analyze", "hosts", "conversations", "timeline", "dns", "anomalies",
+      "stats",   "report", "correlate"};
+  if (kCommands.count(command) == 0 && !pos.empty() && fileExists(pos[0])) {
+    command = "analyze";
+  }
   if (cli.has("help") || command.empty()) {
     printf("%s", Cli::usage("nta").c_str());
     return cli.has("help") ? 0 : 2;
